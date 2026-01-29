@@ -36,11 +36,9 @@ pnpm-debug.log*
 *.temp
 .cache/
 
-# Package manager locks (keep only one)
-# Uncomment the ones you don't use:
-# package-lock.json
-# yarn.lock
-# pnpm-lock.yaml
+# Package manager locks (using pnpm)
+package-lock.json
+yarn.lock
 
 # Vitest
 .vitest/

@@ -596,8 +596,10 @@ This SDK is part of the Authrim identity platform:
 
 | Package | Description |
 |---------|-------------|
-| `@authrim/core` | Client-side SDK for OAuth 2.0 / OIDC flows |
-| `@authrim/server` | Server-side SDK for token validation (this package) |
+| `@authrim/core` | Platform-agnostic core library |
+| `@authrim/web` | Browser implementation |
+| `@authrim/sveltekit` | SvelteKit integration |
+| `@authrim/server` | Server-side token validation (this package) |
 
 ## jose Dependency
 

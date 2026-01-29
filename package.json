@@ -1,6 +1,7 @@
 {
   "name": "@authrim/server",
-  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.0",
+  "version": "0.1.1",
   "description": "Authrim Server SDK - Token validation, DPoP, and middleware for server-side applications",
   "type": "module",
   "exports": {
