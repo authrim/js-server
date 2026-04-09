@@ -18,8 +18,8 @@ importers:
         specifier: ^4.0.0 || ^5.0.0
         version: 5.7.2
       hono:
-        specifier: ^4.0.0
-        version: 4.11.7
+        specifier: ^4.12.12
+        version: 4.12.12
       jose:
         specifier: ^5.2.0
         version: 5.10.0
@@ -914,8 +914,8 @@ packages:
     resolution: {integrity: sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==}
     engines: {node: '>= 0.4'}
 
-  hono@4.11.7:
-    resolution: {integrity: sha512-l7qMiNee7t82bH3SeyUCt9UF15EVmaBvsppY2zQtrbIhl/yzBTny+YUxsVjSjQ6gaqaeVtZmGocom8TzBlA4Yw==}
+  hono@4.12.12:
+    resolution: {integrity: sha512-p1JfQMKaceuCbpJKAPKVqyqviZdS0eUxH9v82oWo1kb9xjQ5wA6iP3FNVAPDFlz5/p7d45lO+BpSk1tuSZMF4Q==}
     engines: {node: '>=16.9.0'}
 
   http-assert@1.5.0:
@@ -2492,7 +2492,7 @@ snapshots:
     dependencies:
       function-bind: 1.1.2
 
-  hono@4.11.7: {}
+  hono@4.12.12: {}
 
   http-assert@1.5.0:
     dependencies:
