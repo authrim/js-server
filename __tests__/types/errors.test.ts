@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   AuthrimServerError,
+  createServerErrorFromOAuthResponse,
   getServerErrorMeta,
+  isAuthrimServerErrorCode,
+  type StepUpErrorResponseBody,
 } from '../../src/types/errors.js';
 
 describe('AuthrimServerError', () => {
@@ -111,6 +114,83 @@ describe('getServerErrorMeta', () => {
       const meta = getServerErrorMeta('configuration_error');
       expect(meta.httpStatus).toBe(500);
       expect(meta.retryable).toBe(false);
+    });
+  });
+
+  describe('Compatibility errors', () => {
+    it('should classify compatibility errors as fatal', () => {
+      const meta = getServerErrorMeta('legacy_endpoint_not_supported');
+
+      expect(meta.httpStatus).toBe(400);
+      expect(meta.retryable).toBe(false);
+      expect(meta.severity).toBe('fatal');
+      expect(isAuthrimServerErrorCode('legacy_endpoint_not_supported')).toBe(true);
+    });
+
+    it('should preserve OAuth error_uri from Authrim payloads', () => {
+      const error = createServerErrorFromOAuthResponse(
+        {
+          error: 'legacy_app_suite_not_supported',
+          error_description: 'Legacy app_suite is not supported',
+          error_uri: 'https://docs.authrim.example/errors/legacy_app_suite_not_supported',
+        },
+        'configuration_error',
+        'Fallback message'
+      );
+
+      expect(error.code).toBe('legacy_app_suite_not_supported');
+      expect(error.message).toBe('Legacy app_suite is not supported');
+      expect(error.errorUri).toBe('https://docs.authrim.example/errors/legacy_app_suite_not_supported');
+      expect(error.meta.severity).toBe('fatal');
+    });
+  });
+
+  describe('Step-Up errors', () => {
+    it('should classify Step-Up error details and preserve status objects', () => {
+      const meta = getServerErrorMeta('invalid_step_up_input');
+      expect(meta.httpStatus).toBe(400);
+      expect(meta.retryable).toBe(true);
+      expect(isAuthrimServerErrorCode('step_up_required')).toBe(true);
+
+      const response: StepUpErrorResponseBody = {
+        error: 'invalid_step_up_input',
+        error_description: 'Invalid verification code',
+        error_details: {
+          code: 'invalid_step_up_input',
+          retryable: true,
+          severity: 'warning',
+          field: 'code',
+        },
+        status: {
+          action_id: 'act_123',
+          status: 'pending',
+          preferred_method: { method: 'email_otp' },
+        },
+        input_state: {
+          field: 'code',
+        },
+      };
+
+      const error = createServerErrorFromOAuthResponse(
+        response,
+        'configuration_error',
+        'Fallback message'
+      );
+
+      expect(error.code).toBe('invalid_step_up_input');
+      expect(error.details?.errorDetails).toEqual(
+        expect.objectContaining({
+          code: 'invalid_step_up_input',
+          field: 'code',
+        })
+      );
+      expect(error.details?.status).toEqual(
+        expect.objectContaining({
+          action_id: 'act_123',
+          status: 'pending',
+        })
+      );
+      expect(error.details?.inputState).toEqual({ field: 'code' });
     });
   });
 });

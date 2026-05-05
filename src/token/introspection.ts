@@ -6,7 +6,11 @@
 
 import type { HttpProvider } from '../providers/http.js';
 import type { IntrospectionRequest, IntrospectionResponse } from '../types/token.js';
-import { AuthrimServerError } from '../types/errors.js';
+import {
+  AuthrimServerError,
+  createServerErrorFromOAuthResponse,
+  type AuthrimOAuthErrorResponse,
+} from '../types/errors.js';
 import { encodeBasicCredentials } from '../utils/auth.js';
 
 /**
@@ -64,11 +68,12 @@ export class IntrospectionClient {
       });
 
       if (!response.ok) {
-        // Consume response body to release the connection
-        await response.text().catch(() => {});
-        throw new AuthrimServerError(
+        const payload = await readOAuthErrorPayload(response);
+        throw createServerErrorFromOAuthResponse(
+          payload,
           'introspection_error',
-          `Introspection request failed: ${response.status} ${response.statusText}`
+          `Introspection request failed: ${response.status} ${response.statusText}`,
+          { status: response.status }
         );
       }
 
@@ -85,5 +90,39 @@ export class IntrospectionClient {
         { cause: error instanceof Error ? error : undefined }
       );
     }
+  }
+
+  /**
+   * Introspect a Native SSO device_secret.
+   *
+   * Callers should avoid logging the raw device_secret.
+   */
+  async introspectDeviceSecret(deviceSecret: string): Promise<IntrospectionResponse> {
+    return this.introspect({
+      token: deviceSecret,
+      token_type_hint: 'device_secret',
+    });
+  }
+}
+
+async function readOAuthErrorPayload(response: Response): Promise<AuthrimOAuthErrorResponse | null> {
+  const contentType = response.headers?.get?.('content-type') ?? '';
+
+  if (contentType.includes('json')) {
+    try {
+      return await response.json() as AuthrimOAuthErrorResponse;
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const text = await response.text();
+    if (!text) {
+      return null;
+    }
+    return JSON.parse(text) as AuthrimOAuthErrorResponse;
+  } catch {
+    return null;
   }
 }

@@ -88,7 +88,7 @@ export interface IntrospectionRequest {
   /** Token to introspect */
   token: string;
   /** Token type hint */
-  token_type_hint?: 'access_token' | 'refresh_token';
+  token_type_hint?: TokenTypeHint;
 }
 
 /**
@@ -121,6 +121,16 @@ export interface IntrospectionResponse {
   jti?: string;
   /** Confirmation (DPoP binding) */
   cnf?: { jkt?: string };
+  /** Native SSO canonical installation id, for device_secret introspection */
+  installation_id?: string;
+  /** Native SSO app display name, omitted when it cannot be resolved */
+  app_display_name?: string;
+  /** Native SSO device platform */
+  platform?: string;
+  /** User-assigned installation display name */
+  display_name?: string;
+  /** Server-generated fallback display name */
+  fallback_display_name?: string;
   /** Additional claims */
   [key: string]: unknown;
 }
@@ -132,5 +142,10 @@ export interface RevocationRequest {
   /** Token to revoke */
   token: string;
   /** Token type hint */
-  token_type_hint?: 'access_token' | 'refresh_token';
+  token_type_hint?: TokenTypeHint;
 }
+
+/**
+ * Token type hints accepted by Authrim token introspection/revocation.
+ */
+export type TokenTypeHint = 'access_token' | 'refresh_token' | 'device_secret';

@@ -55,6 +55,12 @@ export interface AuthrimServerConfig {
   revocationEndpoint?: string;
 
   /**
+   * Canonical Step-Up endpoint base.
+   * Defaults to `{issuer}/auth/step-up`.
+   */
+  stepUpEndpoint?: string;
+
+  /**
    * Client credentials for introspection/revocation
    */
   clientCredentials?: {
@@ -107,6 +113,7 @@ export interface ResolvedAuthrimServerConfig {
   jwksRefreshIntervalMs: number;
   introspectionEndpoint?: string;
   revocationEndpoint?: string;
+  stepUpEndpoint: string;
   clientCredentials?: {
     clientId: string;
     clientSecret: string;

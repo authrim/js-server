@@ -32,9 +32,8 @@ import { calculateJwkThumbprint } from './thumbprint.js';
  * Supported algorithms for DPoP proofs
  */
 const SUPPORTED_ALGORITHMS = new Set([
-  'RS256', 'RS384', 'RS512',
-  'PS256', 'PS384', 'PS512',
-  'ES256', 'ES384', 'ES512',
+  'ES256',
+  'PS256',
   'EdDSA',
 ]);
 

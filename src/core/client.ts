@@ -6,7 +6,17 @@ import type {
   AuthrimServerConfig,
   ResolvedAuthrimServerConfig,
 } from '../types/config.js';
-import type { TokenValidationResult, IntrospectionResponse } from '../types/token.js';
+import type {
+  TokenValidationResult,
+  IntrospectionResponse,
+  TokenTypeHint,
+} from '../types/token.js';
+import type {
+  StepUpActionResponse,
+  StepUpCompleteRequest,
+  StepUpResendResponse,
+  StepUpStartRequest,
+} from '../types/step-up.js';
 import type { DPoPValidationOptions, DPoPValidationResult } from '../types/dpop.js';
 import type { CachedJwk } from '../types/jwk.js';
 import { AuthrimServerError } from '../types/errors.js';
@@ -19,6 +29,17 @@ import { TokenValidator } from '../token/validator.js';
 import { IntrospectionClient } from '../token/introspection.js';
 import { RevocationClient } from '../token/revocation.js';
 import { DPoPValidator } from '../dpop/validator.js';
+import {
+  StepUpClient,
+  type StepUpIdempotentRequestOptions,
+  type StepUpRequestOptions,
+} from '../step-up/client.js';
+import {
+  CustomerProfileClient,
+  type CustomerProfileDelegatedWriteOptions,
+  type CustomerProfileRequestOptions,
+  type CustomerProfileUpdateInput,
+} from '../product/customer-profile.js';
 
 /**
  * Validate URL uses HTTPS
@@ -47,6 +68,16 @@ function validateHttps(url: string | undefined, name: string, requireHttps: bool
   }
 }
 
+function getDefaultStepUpEndpoint(issuer: string | undefined): string {
+  if (!issuer) {
+    throw new AuthrimServerError(
+      'configuration_error',
+      'No issuer configured'
+    );
+  }
+  return `${issuer.replace(/\/$/, '')}/auth/step-up`;
+}
+
 /**
  * Resolve configuration with defaults
  */
@@ -62,6 +93,8 @@ function resolveConfig(config: AuthrimServerConfig): ResolvedAuthrimServerConfig
   validateHttps(config.jwksUri, 'jwksUri', requireHttps);
   validateHttps(config.introspectionEndpoint, 'introspectionEndpoint', requireHttps);
   validateHttps(config.revocationEndpoint, 'revocationEndpoint', requireHttps);
+  const stepUpEndpoint = config.stepUpEndpoint ?? getDefaultStepUpEndpoint(issuer[0]);
+  validateHttps(stepUpEndpoint, 'stepUpEndpoint', requireHttps);
 
   return {
     issuer,
@@ -71,6 +104,7 @@ function resolveConfig(config: AuthrimServerConfig): ResolvedAuthrimServerConfig
     jwksRefreshIntervalMs: config.jwksRefreshIntervalMs ?? 3600_000,
     introspectionEndpoint: config.introspectionEndpoint,
     revocationEndpoint: config.revocationEndpoint,
+    stepUpEndpoint,
     clientCredentials: config.clientCredentials,
     http: config.http ?? fetchHttpProvider(),
     crypto: config.crypto ?? webCryptoProvider(),
@@ -78,6 +112,30 @@ function resolveConfig(config: AuthrimServerConfig): ResolvedAuthrimServerConfig
     jwksCache: config.jwksCache ?? memoryCache<CachedJwk[]>({ ttlMs: config.jwksRefreshIntervalMs ?? 3600_000 }),
     requireHttps,
   };
+}
+
+export interface AuthrimServerStepUpNamespace {
+  start(
+    request: StepUpStartRequest,
+    options?: StepUpRequestOptions
+  ): Promise<StepUpActionResponse>;
+  getAction(
+    actionId: string,
+    options?: StepUpRequestOptions
+  ): Promise<StepUpActionResponse>;
+  complete<Input = unknown>(
+    actionId: string,
+    request: StepUpCompleteRequest<Input>,
+    options?: StepUpIdempotentRequestOptions
+  ): Promise<StepUpActionResponse>;
+  resend(
+    actionId: string,
+    options?: StepUpIdempotentRequestOptions
+  ): Promise<StepUpResendResponse>;
+  cancel(
+    actionId: string,
+    options?: StepUpRequestOptions
+  ): Promise<StepUpActionResponse>;
 }
 
 /**
@@ -92,6 +150,8 @@ export class AuthrimServer {
   private dpopValidator: DPoPValidator | null = null;
   private introspectionClient: IntrospectionClient | null = null;
   private revocationClient: RevocationClient | null = null;
+  private stepUpClient: StepUpClient | null = null;
+  private customerProfileClient: CustomerProfileClient | null = null;
   private initPromise: Promise<void> | null = null;
   private initialized = false;
 
@@ -161,6 +221,21 @@ export class AuthrimServer {
 
     // Initialize DPoP Validator
     this.dpopValidator = new DPoPValidator(this.config.crypto, this.config.clock);
+
+    // Initialize canonical Step-Up client.
+    this.stepUpClient = new StepUpClient({
+      endpoint: this.config.stepUpEndpoint,
+      http: this.config.http,
+    });
+
+    const primaryIssuer = this.config.issuer[0];
+    if (!primaryIssuer) {
+      throw new AuthrimServerError('configuration_error', 'No issuer configured');
+    }
+    this.customerProfileClient = new CustomerProfileClient({
+      issuer: primaryIssuer,
+      http: this.config.http,
+    });
 
     // Initialize Introspection Client if endpoint is provided
     if (this.config.introspectionEndpoint && this.config.clientCredentials) {
@@ -288,7 +363,7 @@ export class AuthrimServer {
    */
   async introspect(
     token: string,
-    tokenTypeHint?: 'access_token' | 'refresh_token'
+    tokenTypeHint?: TokenTypeHint
   ): Promise<IntrospectionResponse> {
     await this.init();
 
@@ -313,7 +388,7 @@ export class AuthrimServer {
    */
   async revoke(
     token: string,
-    tokenTypeHint?: 'access_token' | 'refresh_token'
+    tokenTypeHint?: TokenTypeHint
   ): Promise<void> {
     await this.init();
 
@@ -328,6 +403,137 @@ export class AuthrimServer {
       token,
       token_type_hint: tokenTypeHint,
     });
+  }
+
+  /**
+   * Introspect a Native SSO device_secret.
+   *
+   * Callers should avoid logging the raw device_secret.
+   */
+  async introspectDeviceSecret(deviceSecret: string): Promise<IntrospectionResponse> {
+    return this.introspect(deviceSecret, 'device_secret');
+  }
+
+  /**
+   * Revoke a Native SSO device_secret.
+   *
+   * Callers should avoid logging the raw device_secret.
+   */
+  async revokeDeviceSecret(deviceSecret: string): Promise<void> {
+    return this.revoke(deviceSecret, 'device_secret');
+  }
+
+  /**
+   * Start a canonical Step-Up action from a step_up_token.
+   */
+  async startStepUp(
+    request: StepUpStartRequest,
+    options?: StepUpRequestOptions
+  ): Promise<StepUpActionResponse> {
+    await this.init();
+    return this.getStepUpClient().start(request, options);
+  }
+
+  /**
+   * Read the current Step-Up action status.
+   */
+  async getStepUpAction(
+    actionId: string,
+    options?: StepUpRequestOptions
+  ): Promise<StepUpActionResponse> {
+    await this.init();
+    return this.getStepUpClient().getAction(actionId, options);
+  }
+
+  /**
+   * Complete a Step-Up action.
+   *
+   * If no idempotency key is provided, the SDK generates one.
+   */
+  async completeStepUpAction<Input = unknown>(
+    actionId: string,
+    request: StepUpCompleteRequest<Input>,
+    options?: StepUpIdempotentRequestOptions
+  ): Promise<StepUpActionResponse> {
+    await this.init();
+    return this.getStepUpClient().complete(actionId, request, options);
+  }
+
+  /**
+   * Resend a Step-Up challenge for resend-capable methods.
+   *
+   * If no idempotency key is provided, the SDK generates one.
+   */
+  async resendStepUpAction(
+    actionId: string,
+    options?: StepUpIdempotentRequestOptions
+  ): Promise<StepUpResendResponse> {
+    await this.init();
+    return this.getStepUpClient().resend(actionId, options);
+  }
+
+  /**
+   * Cancel a pending Step-Up action.
+   */
+  async cancelStepUpAction(
+    actionId: string,
+    options?: StepUpRequestOptions
+  ): Promise<StepUpActionResponse> {
+    await this.init();
+    return this.getStepUpClient().cancel(actionId, options);
+  }
+
+  /**
+   * Canonical Step-Up helper namespace.
+   */
+  get stepUp(): AuthrimServerStepUpNamespace {
+    return {
+      start: this.startStepUp.bind(this),
+      getAction: this.getStepUpAction.bind(this),
+      complete: this.completeStepUpAction.bind(this),
+      resend: this.resendStepUpAction.bind(this),
+      cancel: this.cancelStepUpAction.bind(this),
+    };
+  }
+
+  private getStepUpClient(): StepUpClient {
+    if (!this.stepUpClient) {
+      throw new AuthrimServerError(
+        'configuration_error',
+        'Step-Up client not initialized'
+      );
+    }
+    return this.stepUpClient;
+  }
+
+  get customerProfiles() {
+    return {
+      getWithElevationGrant: async (
+        subjectUserId: string,
+        options: CustomerProfileRequestOptions
+      ) => {
+        await this.init();
+        return this.getCustomerProfileClient().getWithElevationGrant(subjectUserId, options);
+      },
+      updateDelegated: async (
+        subjectUserId: string,
+        input: CustomerProfileUpdateInput,
+        options: CustomerProfileDelegatedWriteOptions
+      ) => {
+        await this.init();
+        return this.getCustomerProfileClient().updateDelegated(subjectUserId, input, options);
+      },
+    };
+  }
+
+  private getCustomerProfileClient(): CustomerProfileClient {
+    if (!this.customerProfileClient) {
+      throw new AuthrimServerError(
+        'configuration_error',
+        'Customer profile client not initialized'
+      );
+    }
+    return this.customerProfileClient;
   }
 
   /**
