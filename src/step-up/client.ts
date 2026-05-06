@@ -151,7 +151,17 @@ function generateIdempotencyKey(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
     return globalThis.crypto.randomUUID();
   }
-  return `idem_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 18)}`;
+
+  if (typeof globalThis.crypto?.getRandomValues !== 'function') {
+    throw new AuthrimServerError('configuration_error', 'Secure random generation is unavailable');
+  }
+
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  const randomHex = Array.from(bytes)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+  return `idem_${randomHex}`;
 }
 
 function validateIdempotencyKey(value: string): void {
