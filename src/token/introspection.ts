@@ -12,6 +12,13 @@ import {
   type AuthrimOAuthErrorResponse,
 } from '../types/errors.js';
 import { encodeBasicCredentials } from '../utils/auth.js';
+import {
+  readResponseJsonWithLimit,
+  readResponseTextWithLimit,
+} from '../utils/response-limits.js';
+
+const MAX_INTROSPECTION_RESPONSE_BYTES = 64 * 1024;
+const MAX_OAUTH_ERROR_RESPONSE_BYTES = 16 * 1024;
 
 /**
  * Introspection client configuration
@@ -77,7 +84,10 @@ export class IntrospectionClient {
         );
       }
 
-      const result = await response.json() as IntrospectionResponse;
+      const result = await readResponseJsonWithLimit<IntrospectionResponse>(
+        response,
+        MAX_INTROSPECTION_RESPONSE_BYTES
+      );
       return result;
     } catch (error) {
       if (error instanceof AuthrimServerError) {
@@ -110,14 +120,20 @@ async function readOAuthErrorPayload(response: Response): Promise<AuthrimOAuthEr
 
   if (contentType.includes('json')) {
     try {
-      return await response.json() as AuthrimOAuthErrorResponse;
+      return await readResponseJsonWithLimit<AuthrimOAuthErrorResponse>(
+        response,
+        MAX_OAUTH_ERROR_RESPONSE_BYTES
+      );
     } catch {
       return null;
     }
   }
 
   try {
-    const text = await response.text();
+    const text = await readResponseTextWithLimit(
+      response,
+      MAX_OAUTH_ERROR_RESPONSE_BYTES
+    );
     if (!text) {
       return null;
     }

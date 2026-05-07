@@ -12,6 +12,12 @@ import type { PublicJwk, JwkSet, CachedJwk } from '../types/jwk.js';
 import type { JwtHeader } from '../types/claims.js';
 import { AuthrimServerError } from '../types/errors.js';
 import { selectKey, type KeySelectionResult } from './key-selector.js';
+import {
+  readResponseJsonWithLimit,
+  readResponseTextPreview,
+} from '../utils/response-limits.js';
+
+const MAX_JWKS_RESPONSE_BYTES = 256 * 1024;
 
 /**
  * JWKS Manager configuration
@@ -185,14 +191,14 @@ export class JwksManager {
 
       if (!response.ok) {
         // Consume response body to release the connection
-        await response.text().catch(() => {});
+        await readResponseTextPreview(response, 1024).catch(() => {});
         throw new AuthrimServerError(
           'jwks_fetch_error',
           `Failed to fetch JWKS: ${response.status} ${response.statusText}`
         );
       }
 
-      const jwks = (await response.json()) as JwkSet;
+      const jwks = await readResponseJsonWithLimit<JwkSet>(response, MAX_JWKS_RESPONSE_BYTES);
 
       if (!jwks.keys || !Array.isArray(jwks.keys)) {
         throw new AuthrimServerError(

@@ -502,5 +502,15 @@ describe('DPoPValidator', () => {
       expect(result.valid).toBe(false);
       expect(result.errorCode).toBe('dpop_proof_invalid');
     });
+
+    it('should reject oversized proofs before decoding', async () => {
+      const result = await validator.validate(`${'a'.repeat(8193)}.b.c`, {
+        method: 'POST',
+        uri: 'https://api.example.com/token',
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.errorCode).toBe('dpop_proof_invalid');
+    });
   });
 });

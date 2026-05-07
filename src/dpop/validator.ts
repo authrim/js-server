@@ -38,6 +38,14 @@ const SUPPORTED_ALGORITHMS = new Set([
 ]);
 
 /**
+ * Maximum accepted DPoP proof size in bytes.
+ *
+ * DPoP proofs are JWTs that include an embedded public JWK. They should remain
+ * small; bounding them prevents oversized base64/JSON allocations.
+ */
+const MAX_DPOP_PROOF_SIZE = 8192;
+
+/**
  * Private key parameters that MUST NOT be present in DPoP proof JWK
  * Per RFC 9449, the JWK in the header MUST be a public key
  */
@@ -55,6 +63,10 @@ const PRIVATE_KEY_PARAMS = new Set([
  * Parse a DPoP proof without verification
  */
 function parseDPoPProof(proof: string): { header: DPoPProofHeader; payload: DPoPProofPayload; signature: string } {
+  if (proof.length > MAX_DPOP_PROOF_SIZE) {
+    throw new Error(`DPoP proof exceeds maximum size of ${MAX_DPOP_PROOF_SIZE} bytes`);
+  }
+
   const parts = proof.split('.');
 
   if (parts.length !== 3) {

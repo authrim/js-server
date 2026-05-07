@@ -40,6 +40,12 @@ import {
   type CustomerProfileRequestOptions,
   type CustomerProfileUpdateInput,
 } from '../product/customer-profile.js';
+import {
+  readResponseJsonWithLimit,
+  readResponseTextPreview,
+} from '../utils/response-limits.js';
+
+const MAX_DISCOVERY_RESPONSE_BYTES = 64 * 1024;
 
 /**
  * Validate URL uses HTTPS
@@ -279,14 +285,17 @@ export class AuthrimServer {
 
       if (!response.ok) {
         // Consume response body to release the connection
-        await response.text().catch(() => {});
+        await readResponseTextPreview(response, 1024).catch(() => {});
         throw new AuthrimServerError(
           'configuration_error',
           `Failed to fetch OpenID Configuration: ${response.status}`
         );
       }
 
-      const config = await response.json() as { jwks_uri?: string };
+      const config = await readResponseJsonWithLimit<{ jwks_uri?: string }>(
+        response,
+        MAX_DISCOVERY_RESPONSE_BYTES
+      );
 
       if (!config.jwks_uri) {
         throw new AuthrimServerError(

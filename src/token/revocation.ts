@@ -12,6 +12,12 @@ import {
   type AuthrimOAuthErrorResponse,
 } from '../types/errors.js';
 import { encodeBasicCredentials } from '../utils/auth.js';
+import {
+  readResponseJsonWithLimit,
+  readResponseTextWithLimit,
+} from '../utils/response-limits.js';
+
+const MAX_OAUTH_ERROR_RESPONSE_BYTES = 16 * 1024;
 
 /**
  * Revocation client configuration
@@ -109,14 +115,17 @@ async function readOAuthErrorPayload(response: Response): Promise<AuthrimOAuthEr
 
   if (contentType.includes('json')) {
     try {
-      return await response.json() as AuthrimOAuthErrorResponse;
+      return await readResponseJsonWithLimit<AuthrimOAuthErrorResponse>(
+        response,
+        MAX_OAUTH_ERROR_RESPONSE_BYTES
+      );
     } catch {
       return null;
     }
   }
 
   try {
-    const text = await response.text();
+    const text = await readResponseTextWithLimit(response, MAX_OAUTH_ERROR_RESPONSE_BYTES);
     if (!text) {
       return null;
     }

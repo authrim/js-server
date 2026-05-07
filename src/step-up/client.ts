@@ -10,6 +10,13 @@ import type {
   StepUpCompleteRequest,
   StepUpStartRequest,
 } from '../types/step-up.js';
+import {
+  readResponseJsonWithLimit,
+  readResponseTextWithLimit,
+} from '../utils/response-limits.js';
+
+const MAX_STEP_UP_RESPONSE_BYTES = 128 * 1024;
+const MAX_OAUTH_ERROR_RESPONSE_BYTES = 16 * 1024;
 
 export interface StepUpClientConfig {
   /** Canonical Step-Up endpoint base, usually `{issuer}/auth/step-up`. */
@@ -120,7 +127,7 @@ export class StepUpClient {
       );
     }
 
-    return await response.json() as T;
+    return await readResponseJsonWithLimit<T>(response, MAX_STEP_UP_RESPONSE_BYTES);
   }
 }
 
@@ -191,14 +198,17 @@ async function readOAuthErrorPayload(response: Response): Promise<AuthrimOAuthEr
 
   if (contentType.includes('json')) {
     try {
-      return await response.json() as AuthrimOAuthErrorResponse;
+      return await readResponseJsonWithLimit<AuthrimOAuthErrorResponse>(
+        response,
+        MAX_OAUTH_ERROR_RESPONSE_BYTES
+      );
     } catch {
       return null;
     }
   }
 
   try {
-    const text = await response.text();
+    const text = await readResponseTextWithLimit(response, MAX_OAUTH_ERROR_RESPONSE_BYTES);
     if (!text) {
       return null;
     }

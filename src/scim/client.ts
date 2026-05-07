@@ -16,6 +16,13 @@ import type {
   ScimConditionalGetResult,
 } from './types.js';
 import { AuthrimServerError } from '../types/errors.js';
+import {
+  readResponseJsonWithLimit,
+  readResponseTextPreview,
+} from '../utils/response-limits.js';
+
+const MAX_SCIM_RESPONSE_BYTES = 512 * 1024;
+const MAX_SCIM_ERROR_BYTES = 16 * 1024;
 
 /**
  * SCIM Client configuration
@@ -270,8 +277,11 @@ export class ScimClient {
 
       if (!response.ok) {
         // Try to get error details from response body, or consume it to release connection
-        const error = await response.json().catch(async () => {
-          await response.text().catch(() => {});
+        const error = await readResponseJsonWithLimit<Record<string, unknown>>(
+          response,
+          MAX_SCIM_ERROR_BYTES
+        ).catch(async () => {
+          await readResponseTextPreview(response, 1024).catch(() => {});
           return {};
         });
         throw new AuthrimServerError(
@@ -281,7 +291,7 @@ export class ScimClient {
         );
       }
 
-      const resource = await response.json() as T;
+      const resource = await readResponseJsonWithLimit<T>(response, MAX_SCIM_RESPONSE_BYTES);
       return {
         resource,
         etag: response.headers.get('ETag') ?? undefined,
@@ -347,8 +357,11 @@ export class ScimClient {
 
       if (!response.ok) {
         // Try to get error details from response body, or consume it to release connection
-        const error = await response.json().catch(async () => {
-          await response.text().catch(() => {});
+        const error = await readResponseJsonWithLimit<Record<string, unknown>>(
+          response,
+          MAX_SCIM_ERROR_BYTES
+        ).catch(async () => {
+          await readResponseTextPreview(response, 1024).catch(() => {});
           return {};
         });
         throw new AuthrimServerError(
@@ -358,7 +371,7 @@ export class ScimClient {
         );
       }
 
-      return response.json() as Promise<T>;
+      return readResponseJsonWithLimit<T>(response, MAX_SCIM_RESPONSE_BYTES);
     } catch (error) {
       if (error instanceof AuthrimServerError) {
         throw error;

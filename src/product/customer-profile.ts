@@ -4,6 +4,10 @@ import {
   createServerErrorFromOAuthResponse,
   type AuthrimOAuthErrorResponse,
 } from '../types/errors.js';
+import { readResponseJsonWithLimit } from '../utils/response-limits.js';
+
+const MAX_CUSTOMER_PROFILE_RESPONSE_BYTES = 256 * 1024;
+const MAX_CUSTOMER_PROFILE_ERROR_BYTES = 16 * 1024;
 
 export interface DelegatedWriteAudit {
   reason_code?: string;
@@ -141,7 +145,7 @@ export class CustomerProfileClient {
       );
     }
 
-    return await response.json() as T;
+    return await readResponseJsonWithLimit<T>(response, MAX_CUSTOMER_PROFILE_RESPONSE_BYTES);
   }
 }
 
@@ -183,7 +187,10 @@ function createIdempotencyKey(): string {
 
 async function readJson(response: Response): Promise<AuthrimOAuthErrorResponse | null> {
   try {
-    return await response.json() as Record<string, unknown>;
+    return await readResponseJsonWithLimit<Record<string, unknown>>(
+      response,
+      MAX_CUSTOMER_PROFILE_ERROR_BYTES
+    );
   } catch {
     return null;
   }
