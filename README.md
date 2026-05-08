@@ -12,6 +12,7 @@ This SDK is part of the [Authrim](https://github.com/authrim) identity platform,
 - **Token Introspection** - RFC 7662 support
 - **Token Revocation** - RFC 7009 support
 - **Back-Channel Logout** - OIDC Back-Channel Logout 1.0 support
+- **BFF / Cookie Session Helpers** - HttpOnly cookie session sealing, CSRF double-submit helpers, and token-handler integration primitives
 - **Framework Middleware** - Express, Fastify, Hono, Koa, NestJS
 - **SCIM 2.0** - User and Group provisioning (RFC 7643/7644)
 - **Verifiable Credentials** - OpenID4VCI and OpenID4VP support
@@ -244,6 +245,49 @@ if (tokenResult.data.tokenType === 'DPoP') {
     return { error: dpopResult.errorCode };
   }
 }
+```
+
+## BFF / Cookie Session Helpers
+
+Use the session helpers when a browser app keeps OAuth/OIDC token material on
+the server and exposes an HttpOnly cookie session to browser JavaScript.
+
+```typescript
+import {
+  establishCookieSessionFromDirectAuthArtifact,
+  createDoubleSubmitCsrfToken,
+  verifyDoubleSubmitCsrfToken,
+} from '@authrim/server';
+
+const established = await establishCookieSessionFromDirectAuthArtifact(
+  { issuer: 'https://auth.example.com' },
+  {
+    clientId: 'server-client',
+    directAuthArtifact: 'dfa_...',
+    codeVerifier: 'pkce-verifier',
+  },
+  {
+    async createSession({ tokens }) {
+      return persistServerSession(tokens);
+    },
+  },
+  {
+    requestOrigin: 'https://app.example.com',
+    applicationOrigin: 'https://app.example.com',
+    csrfSecret: process.env.AUTHRIM_SESSION_SECRET!,
+  }
+);
+
+const csrf = await createDoubleSubmitCsrfToken({
+  secret: process.env.AUTHRIM_SESSION_SECRET!,
+  sessionId: established.sessionId,
+});
+await verifyDoubleSubmitCsrfToken({
+  secret: process.env.AUTHRIM_SESSION_SECRET!,
+  sessionId: established.sessionId,
+  cookieToken: csrf,
+  headerToken: csrf,
+});
 ```
 
 ### DPoP with Nonce
