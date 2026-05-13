@@ -13,7 +13,10 @@
 export {
   AuthrimServer,
   createAuthrimServer,
+  type AuthrimServerIssuerOptions,
   type AuthrimServerStepUpNamespace,
+  type AuthrimServerStepUpIdempotentRequestOptions,
+  type AuthrimServerStepUpRequestOptions,
 } from './core/client.js';
 
 // Types

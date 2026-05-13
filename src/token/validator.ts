@@ -12,13 +12,16 @@ import { AuthrimServerError } from '../types/errors.js';
 import { JwksManager } from '../jwks/manager.js';
 import { parseJwt, verifyJwtSignature } from './verify-jwt.js';
 import { validateClaims, getExpiresIn } from './validate-claims.js';
+import { timingSafeEqual } from '../utils/timing-safe.js';
 
 /**
  * Token Validator configuration
  */
 export interface TokenValidatorConfig {
-  /** JWKS Manager */
-  jwksManager: JwksManager;
+  /** JWKS Manager. Used when all configured issuers share the same JWKS. */
+  jwksManager?: JwksManager;
+  /** Resolve the JWKS manager for the token issuer. */
+  jwksManagerResolver?: (issuer: string) => Promise<JwksManager>;
   /** Crypto provider */
   crypto: CryptoProvider;
   /** Clock provider */
@@ -67,8 +70,19 @@ export class TokenValidator {
         };
       }
 
-      // Get signing key from JWKS
-      const keyResult = await this.config.jwksManager.getKey(parsed.header);
+      const issuerResult = this.validateUnverifiedIssuer(parsed.payload.iss);
+      if (!issuerResult.valid) {
+        return {
+          data: null,
+          error: issuerResult.error,
+        };
+      }
+
+      const tokenIssuer = parsed.payload.iss!;
+
+      // Get signing key from the JWKS allowed for this issuer.
+      const jwksManager = await this.getJwksManager(tokenIssuer);
+      const keyResult = await jwksManager.getKey(parsed.header);
       if (keyResult.error) {
         return {
           data: null,
@@ -136,6 +150,15 @@ export class TokenValidator {
         }
       }
 
+      const tenantResult = await this.validateTenant(verified.payload);
+      if (!tenantResult.valid && tenantResult.error) {
+        return {
+          data: null,
+          error: tenantResult.error,
+        };
+      }
+      const tenantId = tenantResult.valid ? tenantResult.tenantId : undefined;
+
       // Determine token type
       const tokenType = verified.payload.cnf?.jkt ? 'DPoP' : 'Bearer';
 
@@ -143,6 +166,8 @@ export class TokenValidator {
       const validatedToken: ValidatedToken = {
         claims: verified.payload,
         token,
+        issuer: tokenIssuer,
+        ...(tenantId ? { tenantId } : {}),
         tokenType,
         expiresIn: getExpiresIn(verified.payload.exp, now),
       };
@@ -170,6 +195,117 @@ export class TokenValidator {
         },
       };
     }
+  }
+
+  /**
+   * Resolve JWKS manager for the already allow-listed issuer.
+   */
+  private async getJwksManager(issuer: string): Promise<JwksManager> {
+    if (this.config.jwksManagerResolver) {
+      return this.config.jwksManagerResolver(issuer);
+    }
+    if (this.config.jwksManager) {
+      return this.config.jwksManager;
+    }
+    throw new AuthrimServerError('configuration_error', 'JWKS manager not configured');
+  }
+
+  /**
+   * Validate issuer before any JWKS lookup to avoid attacker-controlled discovery.
+   */
+  private validateUnverifiedIssuer(
+    iss: string | undefined
+  ): { valid: true } | { valid: false; error: { code: string; message: string } } {
+    if (!iss) {
+      return {
+        valid: false,
+        error: { code: 'invalid_issuer', message: 'Missing or empty issuer claim' },
+      };
+    }
+
+    const expected = Array.isArray(this.config.options.issuer)
+      ? this.config.options.issuer
+      : [this.config.options.issuer];
+    const validIssuers = expected.filter((issuer) => issuer !== '');
+    if (validIssuers.length === 0) {
+      return {
+        valid: false,
+        error: { code: 'invalid_issuer', message: 'No valid expected issuers configured' },
+      };
+    }
+
+    if (!validIssuers.some((issuer) => timingSafeEqual(iss, issuer))) {
+      return {
+        valid: false,
+        error: { code: 'invalid_issuer', message: `Invalid issuer: ${iss}` },
+      };
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * Validate tenant claim according to SDK caller policy.
+   */
+  private async validateTenant(
+    claims: AccessTokenClaims
+  ): Promise<
+    | { valid: true; tenantId?: string }
+    | { valid: false; error: { code: string; message: string } }
+  > {
+    const claimName = this.config.options.tenantClaim ?? 'tenant_id';
+    const rawTenantId = claims[claimName];
+    const tenantId = typeof rawTenantId === 'string' && rawTenantId.trim() ? rawTenantId : undefined;
+    const hasTenantRule =
+      this.config.options.requireTenantClaim === true ||
+      Boolean(this.config.options.requiredTenantId) ||
+      Boolean(this.config.options.allowedTenantIds?.length) ||
+      Boolean(this.config.options.tenantPredicate);
+
+    if (!tenantId) {
+      if (!hasTenantRule) {
+        return { valid: true };
+      }
+      return {
+        valid: false,
+        error: {
+          code: 'invalid_tenant',
+          message: `Missing or empty tenant claim: ${claimName}`,
+        },
+      };
+    }
+
+    if (
+      this.config.options.requiredTenantId &&
+      !timingSafeEqual(tenantId, this.config.options.requiredTenantId)
+    ) {
+      return {
+        valid: false,
+        error: { code: 'invalid_tenant', message: 'Token tenant does not match required tenant' },
+      };
+    }
+
+    if (
+      this.config.options.allowedTenantIds?.length &&
+      !this.config.options.allowedTenantIds.some((allowed) => timingSafeEqual(tenantId, allowed))
+    ) {
+      return {
+        valid: false,
+        error: { code: 'invalid_tenant', message: 'Token tenant is not allowed' },
+      };
+    }
+
+    if (this.config.options.tenantPredicate) {
+      const allowed = await this.config.options.tenantPredicate(tenantId, claims);
+      if (!allowed) {
+        return {
+          valid: false,
+          error: { code: 'invalid_tenant', message: 'Token tenant was rejected by predicate' },
+        };
+      }
+    }
+
+    return { valid: true, tenantId };
   }
 
   /**

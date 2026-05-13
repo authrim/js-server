@@ -11,6 +11,7 @@ import type {
   IntrospectionResponse,
   TokenTypeHint,
 } from '../types/token.js';
+import type { ValidatedToken } from '../types/claims.js';
 import type {
   StepUpActionResponse,
   StepUpCompleteRequest,
@@ -84,11 +85,29 @@ function getDefaultStepUpEndpoint(issuer: string | undefined): string {
   return `${issuer.replace(/\/$/, '')}/auth/step-up`;
 }
 
+function normalizeIssuer(issuer: string): string {
+  return issuer.replace(/\/$/, '');
+}
+
+function validateUrlMap(
+  map: Record<string, string> | undefined,
+  name: string,
+  requireHttps: boolean
+): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [issuer, endpoint] of Object.entries(map ?? {})) {
+    validateHttps(issuer, `${name} issuer`, requireHttps);
+    validateHttps(endpoint, `${name}[${issuer}]`, requireHttps);
+    normalized[normalizeIssuer(issuer)] = endpoint;
+  }
+  return normalized;
+}
+
 /**
  * Resolve configuration with defaults
  */
 function resolveConfig(config: AuthrimServerConfig): ResolvedAuthrimServerConfig {
-  const issuer = Array.isArray(config.issuer) ? config.issuer : [config.issuer];
+  const issuer = (Array.isArray(config.issuer) ? config.issuer : [config.issuer]).map(normalizeIssuer);
   const audience = Array.isArray(config.audience) ? config.audience : [config.audience];
   const requireHttps = config.requireHttps ?? true;
 
@@ -99,19 +118,41 @@ function resolveConfig(config: AuthrimServerConfig): ResolvedAuthrimServerConfig
   validateHttps(config.jwksUri, 'jwksUri', requireHttps);
   validateHttps(config.introspectionEndpoint, 'introspectionEndpoint', requireHttps);
   validateHttps(config.revocationEndpoint, 'revocationEndpoint', requireHttps);
-  const stepUpEndpoint = config.stepUpEndpoint ?? getDefaultStepUpEndpoint(issuer[0]);
-  validateHttps(stepUpEndpoint, 'stepUpEndpoint', requireHttps);
+  validateHttps(config.stepUpEndpoint, 'stepUpEndpoint', requireHttps);
+
+  const jwksUriByIssuer = validateUrlMap(config.jwksUriByIssuer, 'jwksUriByIssuer', requireHttps);
+  const introspectionEndpointByIssuer = validateUrlMap(
+    config.introspectionEndpointByIssuer,
+    'introspectionEndpointByIssuer',
+    requireHttps
+  );
+  const revocationEndpointByIssuer = validateUrlMap(
+    config.revocationEndpointByIssuer,
+    'revocationEndpointByIssuer',
+    requireHttps
+  );
+  const stepUpEndpointByIssuer = validateUrlMap(
+    config.stepUpEndpointByIssuer,
+    'stepUpEndpointByIssuer',
+    requireHttps
+  );
 
   return {
     issuer,
     audience,
     jwksUri: config.jwksUri,
+    jwksUriByIssuer,
+    dynamicJwksDiscovery: config.dynamicJwksDiscovery ?? true,
     clockToleranceSeconds: config.clockToleranceSeconds ?? 60,
     jwksRefreshIntervalMs: config.jwksRefreshIntervalMs ?? 3600_000,
     introspectionEndpoint: config.introspectionEndpoint,
+    introspectionEndpointByIssuer,
     revocationEndpoint: config.revocationEndpoint,
-    stepUpEndpoint,
+    revocationEndpointByIssuer,
+    stepUpEndpoint: config.stepUpEndpoint,
+    stepUpEndpointByIssuer,
     clientCredentials: config.clientCredentials,
+    tokenValidation: config.tokenValidation ?? {},
     http: config.http ?? fetchHttpProvider(),
     crypto: config.crypto ?? webCryptoProvider(),
     clock: config.clock ?? systemClock(),
@@ -123,26 +164,37 @@ function resolveConfig(config: AuthrimServerConfig): ResolvedAuthrimServerConfig
 export interface AuthrimServerStepUpNamespace {
   start(
     request: StepUpStartRequest,
-    options?: StepUpRequestOptions
+    options?: AuthrimServerStepUpRequestOptions
   ): Promise<StepUpActionResponse>;
   getAction(
     actionId: string,
-    options?: StepUpRequestOptions
+    options?: AuthrimServerStepUpRequestOptions
   ): Promise<StepUpActionResponse>;
   complete<Input = unknown>(
     actionId: string,
     request: StepUpCompleteRequest<Input>,
-    options?: StepUpIdempotentRequestOptions
+    options?: AuthrimServerStepUpIdempotentRequestOptions
   ): Promise<StepUpActionResponse>;
   resend(
     actionId: string,
-    options?: StepUpIdempotentRequestOptions
+    options?: AuthrimServerStepUpIdempotentRequestOptions
   ): Promise<StepUpResendResponse>;
   cancel(
     actionId: string,
-    options?: StepUpRequestOptions
+    options?: AuthrimServerStepUpRequestOptions
   ): Promise<StepUpActionResponse>;
 }
+
+export interface AuthrimServerIssuerOptions {
+  /** Explicit issuer for helper APIs when multiple issuers are configured. */
+  issuer?: string;
+  /** Validated token context; preferred over the explicit issuer option. */
+  token?: ValidatedToken;
+}
+
+export type AuthrimServerStepUpRequestOptions = StepUpRequestOptions & AuthrimServerIssuerOptions;
+export type AuthrimServerStepUpIdempotentRequestOptions =
+  StepUpIdempotentRequestOptions & AuthrimServerIssuerOptions;
 
 /**
  * AuthrimServer
@@ -151,13 +203,13 @@ export interface AuthrimServerStepUpNamespace {
  */
 export class AuthrimServer {
   private readonly config: ResolvedAuthrimServerConfig;
-  private jwksManager: JwksManager | null = null;
+  private jwksManagers = new Map<string, JwksManager>();
   private tokenValidator: TokenValidator | null = null;
   private dpopValidator: DPoPValidator | null = null;
-  private introspectionClient: IntrospectionClient | null = null;
-  private revocationClient: RevocationClient | null = null;
-  private stepUpClient: StepUpClient | null = null;
-  private customerProfileClient: CustomerProfileClient | null = null;
+  private introspectionClients = new Map<string, IntrospectionClient>();
+  private revocationClients = new Map<string, RevocationClient>();
+  private stepUpClients = new Map<string, StepUpClient>();
+  private customerProfileClients = new Map<string, CustomerProfileClient>();
   private initPromise: Promise<void> | null = null;
   private initialized = false;
 
@@ -196,86 +248,35 @@ export class AuthrimServer {
   }
 
   private async doInit(): Promise<void> {
-    // Discover JWKS URI if not provided
-    let jwksUri = this.config.jwksUri;
-
-    if (!jwksUri) {
-      jwksUri = await this.discoverJwksUri();
-    }
-
-    // Initialize JWKS Manager
-    this.jwksManager = new JwksManager({
-      jwksUri,
-      cacheTtlMs: this.config.jwksRefreshIntervalMs,
-      http: this.config.http,
-      crypto: this.config.crypto,
-      clock: this.config.clock,
-      cache: this.config.jwksCache,
-    });
-
     // Initialize Token Validator
     this.tokenValidator = new TokenValidator({
-      jwksManager: this.jwksManager,
+      jwksManagerResolver: (issuer) => this.getJwksManagerForIssuer(issuer),
       crypto: this.config.crypto,
       clock: this.config.clock,
       options: {
         issuer: this.config.issuer,
         audience: this.config.audience,
         clockToleranceSeconds: this.config.clockToleranceSeconds,
+        ...this.config.tokenValidation,
       },
     });
 
     // Initialize DPoP Validator
     this.dpopValidator = new DPoPValidator(this.config.crypto, this.config.clock);
 
-    // Initialize canonical Step-Up client.
-    this.stepUpClient = new StepUpClient({
-      endpoint: this.config.stepUpEndpoint,
-      http: this.config.http,
-    });
-
-    const primaryIssuer = this.config.issuer[0];
-    if (!primaryIssuer) {
-      throw new AuthrimServerError('configuration_error', 'No issuer configured');
-    }
-    this.customerProfileClient = new CustomerProfileClient({
-      issuer: primaryIssuer,
-      http: this.config.http,
-    });
-
-    // Initialize Introspection Client if endpoint is provided
-    if (this.config.introspectionEndpoint && this.config.clientCredentials) {
-      this.introspectionClient = new IntrospectionClient({
-        endpoint: this.config.introspectionEndpoint,
-        clientId: this.config.clientCredentials.clientId,
-        clientSecret: this.config.clientCredentials.clientSecret,
-        http: this.config.http,
-      });
-    }
-
-    // Initialize Revocation Client if endpoint is provided
-    if (this.config.revocationEndpoint && this.config.clientCredentials) {
-      this.revocationClient = new RevocationClient({
-        endpoint: this.config.revocationEndpoint,
-        clientId: this.config.clientCredentials.clientId,
-        clientSecret: this.config.clientCredentials.clientSecret,
-        http: this.config.http,
-      });
+    // Preserve the historical single-issuer init behavior: configuration problems
+    // in discovery are surfaced during init instead of the first token validation.
+    if (!this.config.jwksUri && Object.keys(this.config.jwksUriByIssuer).length === 0) {
+      if (this.config.issuer.length === 1 && this.config.issuer[0]) {
+        await this.getJwksManagerForIssuer(this.config.issuer[0]);
+      }
     }
   }
 
   /**
    * Discover JWKS URI from OpenID Configuration
    */
-  private async discoverJwksUri(): Promise<string> {
-    const issuer = this.config.issuer[0];
-    if (!issuer) {
-      throw new AuthrimServerError(
-        'configuration_error',
-        'No issuer configured'
-      );
-    }
-
+  private async discoverJwksUri(issuer: string): Promise<string> {
     const configUrl = `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
 
     try {
@@ -318,6 +319,144 @@ export class AuthrimServer {
         { cause: error instanceof Error ? error : undefined }
       );
     }
+  }
+
+  private assertAllowedIssuer(issuer: string): string {
+    const normalized = normalizeIssuer(issuer);
+    if (!this.config.issuer.includes(normalized)) {
+      throw new AuthrimServerError('invalid_issuer', `Issuer is not configured: ${normalized}`);
+    }
+    return normalized;
+  }
+
+  private resolveIssuer(options?: AuthrimServerIssuerOptions): string {
+    if (options?.token?.issuer) {
+      return this.assertAllowedIssuer(options.token.issuer);
+    }
+    if (options?.issuer) {
+      return this.assertAllowedIssuer(options.issuer);
+    }
+    if (this.config.issuer.length === 1 && this.config.issuer[0]) {
+      return this.config.issuer[0];
+    }
+    throw new AuthrimServerError(
+      'configuration_error',
+      'issuer or validated token context is required when multiple issuers are configured'
+    );
+  }
+
+  private async getJwksManagerForIssuer(issuer: string): Promise<JwksManager> {
+    const normalizedIssuer = this.assertAllowedIssuer(issuer);
+    const existing = this.jwksManagers.get(normalizedIssuer);
+    if (existing) {
+      return existing;
+    }
+
+    let jwksUri = this.config.jwksUriByIssuer[normalizedIssuer] ?? this.config.jwksUri;
+    if (!jwksUri) {
+      if (!this.config.dynamicJwksDiscovery) {
+        throw new AuthrimServerError(
+          'configuration_error',
+          `JWKS URI is not configured for issuer: ${normalizedIssuer}`
+        );
+      }
+      jwksUri = await this.discoverJwksUri(normalizedIssuer);
+    }
+
+    const manager = new JwksManager({
+      jwksUri,
+      cacheTtlMs: this.config.jwksRefreshIntervalMs,
+      http: this.config.http,
+      crypto: this.config.crypto,
+      clock: this.config.clock,
+      cache: this.config.jwksCache,
+    });
+    this.jwksManagers.set(normalizedIssuer, manager);
+    return manager;
+  }
+
+  private getIntrospectionClientForIssuer(issuer: string): IntrospectionClient {
+    const normalizedIssuer = this.assertAllowedIssuer(issuer);
+    const endpoint =
+      this.config.introspectionEndpointByIssuer[normalizedIssuer] ??
+      this.config.introspectionEndpoint;
+    if (!endpoint || !this.config.clientCredentials) {
+      throw new AuthrimServerError(
+        'configuration_error',
+        'Introspection endpoint not configured'
+      );
+    }
+
+    const existing = this.introspectionClients.get(normalizedIssuer);
+    if (existing) {
+      return existing;
+    }
+    const client = new IntrospectionClient({
+      endpoint,
+      clientId: this.config.clientCredentials.clientId,
+      clientSecret: this.config.clientCredentials.clientSecret,
+      http: this.config.http,
+    });
+    this.introspectionClients.set(normalizedIssuer, client);
+    return client;
+  }
+
+  private getRevocationClientForIssuer(issuer: string): RevocationClient {
+    const normalizedIssuer = this.assertAllowedIssuer(issuer);
+    const endpoint =
+      this.config.revocationEndpointByIssuer[normalizedIssuer] ??
+      this.config.revocationEndpoint;
+    if (!endpoint || !this.config.clientCredentials) {
+      throw new AuthrimServerError(
+        'configuration_error',
+        'Revocation endpoint not configured'
+      );
+    }
+
+    const existing = this.revocationClients.get(normalizedIssuer);
+    if (existing) {
+      return existing;
+    }
+    const client = new RevocationClient({
+      endpoint,
+      clientId: this.config.clientCredentials.clientId,
+      clientSecret: this.config.clientCredentials.clientSecret,
+      http: this.config.http,
+    });
+    this.revocationClients.set(normalizedIssuer, client);
+    return client;
+  }
+
+  private getStepUpClientForIssuer(issuer: string): StepUpClient {
+    const normalizedIssuer = this.assertAllowedIssuer(issuer);
+    const endpoint =
+      this.config.stepUpEndpointByIssuer[normalizedIssuer] ??
+      this.config.stepUpEndpoint ??
+      getDefaultStepUpEndpoint(normalizedIssuer);
+    const existing = this.stepUpClients.get(normalizedIssuer);
+    if (existing) {
+      return existing;
+    }
+    const client = new StepUpClient({
+      endpoint,
+      http: this.config.http,
+    });
+    this.stepUpClients.set(normalizedIssuer, client);
+    return client;
+  }
+
+  private getCustomerProfileClientForIssuer(issuer: string): CustomerProfileClient {
+    const normalizedIssuer = this.assertAllowedIssuer(issuer);
+    const existing = this.customerProfileClients.get(normalizedIssuer);
+    if (existing) {
+      return existing;
+    }
+    const client = new CustomerProfileClient({
+      issuer: normalizedIssuer,
+      http: this.config.http,
+    });
+    this.customerProfileClients.set(normalizedIssuer, client);
+    return client;
   }
 
   /**
@@ -372,18 +511,12 @@ export class AuthrimServer {
    */
   async introspect(
     token: string,
-    tokenTypeHint?: TokenTypeHint
+    tokenTypeHint?: TokenTypeHint,
+    options?: AuthrimServerIssuerOptions
   ): Promise<IntrospectionResponse> {
     await this.init();
 
-    if (!this.introspectionClient) {
-      throw new AuthrimServerError(
-        'configuration_error',
-        'Introspection endpoint not configured'
-      );
-    }
-
-    return this.introspectionClient.introspect({
+    return this.getIntrospectionClientForIssuer(this.resolveIssuer(options)).introspect({
       token,
       token_type_hint: tokenTypeHint,
     });
@@ -397,18 +530,12 @@ export class AuthrimServer {
    */
   async revoke(
     token: string,
-    tokenTypeHint?: TokenTypeHint
+    tokenTypeHint?: TokenTypeHint,
+    options?: AuthrimServerIssuerOptions
   ): Promise<void> {
     await this.init();
 
-    if (!this.revocationClient) {
-      throw new AuthrimServerError(
-        'configuration_error',
-        'Revocation endpoint not configured'
-      );
-    }
-
-    return this.revocationClient.revoke({
+    return this.getRevocationClientForIssuer(this.resolveIssuer(options)).revoke({
       token,
       token_type_hint: tokenTypeHint,
     });
@@ -419,8 +546,11 @@ export class AuthrimServer {
    *
    * Callers should avoid logging the raw device_secret.
    */
-  async introspectDeviceSecret(deviceSecret: string): Promise<IntrospectionResponse> {
-    return this.introspect(deviceSecret, 'device_secret');
+  async introspectDeviceSecret(
+    deviceSecret: string,
+    options?: AuthrimServerIssuerOptions
+  ): Promise<IntrospectionResponse> {
+    return this.introspect(deviceSecret, 'device_secret', options);
   }
 
   /**
@@ -428,8 +558,11 @@ export class AuthrimServer {
    *
    * Callers should avoid logging the raw device_secret.
    */
-  async revokeDeviceSecret(deviceSecret: string): Promise<void> {
-    return this.revoke(deviceSecret, 'device_secret');
+  async revokeDeviceSecret(
+    deviceSecret: string,
+    options?: AuthrimServerIssuerOptions
+  ): Promise<void> {
+    return this.revoke(deviceSecret, 'device_secret', options);
   }
 
   /**
@@ -437,10 +570,10 @@ export class AuthrimServer {
    */
   async startStepUp(
     request: StepUpStartRequest,
-    options?: StepUpRequestOptions
+    options?: AuthrimServerStepUpRequestOptions
   ): Promise<StepUpActionResponse> {
     await this.init();
-    return this.getStepUpClient().start(request, options);
+    return this.getStepUpClientForIssuer(this.resolveIssuer(options)).start(request, options);
   }
 
   /**
@@ -448,10 +581,10 @@ export class AuthrimServer {
    */
   async getStepUpAction(
     actionId: string,
-    options?: StepUpRequestOptions
+    options?: AuthrimServerStepUpRequestOptions
   ): Promise<StepUpActionResponse> {
     await this.init();
-    return this.getStepUpClient().getAction(actionId, options);
+    return this.getStepUpClientForIssuer(this.resolveIssuer(options)).getAction(actionId, options);
   }
 
   /**
@@ -462,10 +595,10 @@ export class AuthrimServer {
   async completeStepUpAction<Input = unknown>(
     actionId: string,
     request: StepUpCompleteRequest<Input>,
-    options?: StepUpIdempotentRequestOptions
+    options?: AuthrimServerStepUpIdempotentRequestOptions
   ): Promise<StepUpActionResponse> {
     await this.init();
-    return this.getStepUpClient().complete(actionId, request, options);
+    return this.getStepUpClientForIssuer(this.resolveIssuer(options)).complete(actionId, request, options);
   }
 
   /**
@@ -475,10 +608,10 @@ export class AuthrimServer {
    */
   async resendStepUpAction(
     actionId: string,
-    options?: StepUpIdempotentRequestOptions
+    options?: AuthrimServerStepUpIdempotentRequestOptions
   ): Promise<StepUpResendResponse> {
     await this.init();
-    return this.getStepUpClient().resend(actionId, options);
+    return this.getStepUpClientForIssuer(this.resolveIssuer(options)).resend(actionId, options);
   }
 
   /**
@@ -486,10 +619,10 @@ export class AuthrimServer {
    */
   async cancelStepUpAction(
     actionId: string,
-    options?: StepUpRequestOptions
+    options?: AuthrimServerStepUpRequestOptions
   ): Promise<StepUpActionResponse> {
     await this.init();
-    return this.getStepUpClient().cancel(actionId, options);
+    return this.getStepUpClientForIssuer(this.resolveIssuer(options)).cancel(actionId, options);
   }
 
   /**
@@ -505,44 +638,28 @@ export class AuthrimServer {
     };
   }
 
-  private getStepUpClient(): StepUpClient {
-    if (!this.stepUpClient) {
-      throw new AuthrimServerError(
-        'configuration_error',
-        'Step-Up client not initialized'
-      );
-    }
-    return this.stepUpClient;
-  }
-
   get customerProfiles() {
     return {
       getWithElevationGrant: async (
         subjectUserId: string,
-        options: CustomerProfileRequestOptions
+        options: CustomerProfileRequestOptions & AuthrimServerIssuerOptions
       ) => {
         await this.init();
-        return this.getCustomerProfileClient().getWithElevationGrant(subjectUserId, options);
+        return this.getCustomerProfileClientForIssuer(
+          this.resolveIssuer(options)
+        ).getWithElevationGrant(subjectUserId, options);
       },
       updateDelegated: async (
         subjectUserId: string,
         input: CustomerProfileUpdateInput,
-        options: CustomerProfileDelegatedWriteOptions
+        options: CustomerProfileDelegatedWriteOptions & AuthrimServerIssuerOptions
       ) => {
         await this.init();
-        return this.getCustomerProfileClient().updateDelegated(subjectUserId, input, options);
+        return this.getCustomerProfileClientForIssuer(
+          this.resolveIssuer(options)
+        ).updateDelegated(subjectUserId, input, options);
       },
     };
-  }
-
-  private getCustomerProfileClient(): CustomerProfileClient {
-    if (!this.customerProfileClient) {
-      throw new AuthrimServerError(
-        'configuration_error',
-        'Customer profile client not initialized'
-      );
-    }
-    return this.customerProfileClient;
   }
 
   /**
@@ -556,7 +673,9 @@ export class AuthrimServer {
    * Invalidate JWKS cache
    */
   invalidateJwksCache(): void {
-    this.jwksManager?.invalidate();
+    for (const manager of this.jwksManagers.values()) {
+      manager.invalidate();
+    }
   }
 }
 

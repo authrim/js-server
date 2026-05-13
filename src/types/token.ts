@@ -18,6 +18,22 @@ export interface TokenValidationOptions {
   requiredScopes?: string[];
   /** Whether to validate DPoP binding if cnf claim is present */
   validateDPoP?: boolean;
+  /**
+   * Claim name that carries the tenant id.
+   * @default "tenant_id"
+   */
+  tenantClaim?: string;
+  /** Require the tenant claim even when no specific tenant rule is configured. */
+  requireTenantClaim?: boolean;
+  /** Require the token to belong to this exact tenant. */
+  requiredTenantId?: string;
+  /** Require the token tenant to be one of these tenants. */
+  allowedTenantIds?: string[];
+  /** Custom tenant predicate for advanced ABAC/ReBAC use cases. */
+  tenantPredicate?: (
+    tenantId: string,
+    claims: import('./claims.js').AccessTokenClaims
+  ) => boolean | Promise<boolean>;
 }
 
 /**

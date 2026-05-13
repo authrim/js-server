@@ -18,6 +18,7 @@ export type AuthrimServerErrorCode =
   // Issuer/Audience validation
   | 'invalid_issuer'
   | 'invalid_audience'
+  | 'invalid_tenant'
   // JWKS errors
   | 'jwks_fetch_error'
   | 'jwks_key_not_found'
@@ -240,6 +241,12 @@ const ERROR_META_MAP: Record<AuthrimServerErrorCode, AuthrimServerErrorMeta> = {
     transient: false,
     retryable: false,
     wwwAuthenticateError: 'invalid_token',
+  },
+  invalid_tenant: {
+    httpStatus: 403,
+    transient: false,
+    retryable: false,
+    wwwAuthenticateError: 'insufficient_scope',
   },
 
   // JWKS errors

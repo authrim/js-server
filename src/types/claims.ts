@@ -78,6 +78,10 @@ export interface ValidatedToken {
   claims: AccessTokenClaims;
   /** Raw token string */
   token: string;
+  /** Validated issuer. */
+  issuer: string;
+  /** Validated tenant id when a tenant claim is present. */
+  tenantId?: string;
   /** Token type */
   tokenType: 'Bearer' | 'DPoP';
   /** Time remaining until expiration (seconds) */
