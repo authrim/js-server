@@ -13,6 +13,12 @@ import type {
   CredentialFormat,
 } from './types.js';
 import { AuthrimServerError } from '../types/errors.js';
+import { readResponseJsonWithLimit } from '../utils/response-limits.js';
+
+const MAX_CREDENTIAL_ISSUER_METADATA_BYTES = 128 * 1024;
+const MAX_CREDENTIAL_RESPONSE_BYTES = 256 * 1024;
+const MAX_CREDENTIAL_ERROR_BYTES = 16 * 1024;
+const MAX_INLINE_CREDENTIAL_OFFER_BYTES = 16 * 1024;
 
 /**
  * Credential Issuer configuration
@@ -79,7 +85,10 @@ export class CredentialIssuer {
         );
       }
 
-      this.metadata = await response.json() as CredentialIssuerMetadata;
+      this.metadata = await readResponseJsonWithLimit<CredentialIssuerMetadata>(
+        response,
+        MAX_CREDENTIAL_ISSUER_METADATA_BYTES
+      );
       return this.metadata;
     } catch (error) {
       if (error instanceof AuthrimServerError) {
@@ -110,7 +119,10 @@ export class CredentialIssuer {
       });
 
       if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
+        const error = await readResponseJsonWithLimit<Record<string, unknown>>(
+          response,
+          MAX_CREDENTIAL_ERROR_BYTES
+        ).catch(() => ({}));
         throw new AuthrimServerError(
           'network_error',
           `Credential request failed: ${response.status}`,
@@ -118,7 +130,7 @@ export class CredentialIssuer {
         );
       }
 
-      return response.json() as Promise<CredentialResponse>;
+      return readResponseJsonWithLimit<CredentialResponse>(response, MAX_CREDENTIAL_RESPONSE_BYTES);
     } catch (error) {
       if (error instanceof AuthrimServerError) {
         throw error;
@@ -140,6 +152,12 @@ export class CredentialIssuer {
     const offerUriParam = url.searchParams.get('credential_offer_uri');
 
     if (offerParam) {
+      if (new TextEncoder().encode(offerParam).byteLength > MAX_INLINE_CREDENTIAL_OFFER_BYTES) {
+        throw new AuthrimServerError(
+          'configuration_error',
+          'credential_offer is too large'
+        );
+      }
       return JSON.parse(offerParam) as CredentialOffer;
     }
 

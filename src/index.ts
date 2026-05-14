@@ -10,7 +10,14 @@
  */
 
 // Main client
-export { AuthrimServer, createAuthrimServer } from './core/client.js';
+export {
+  AuthrimServer,
+  createAuthrimServer,
+  type AuthrimServerIssuerOptions,
+  type AuthrimServerStepUpNamespace,
+  type AuthrimServerStepUpIdempotentRequestOptions,
+  type AuthrimServerStepUpRequestOptions,
+} from './core/client.js';
 
 // Types
 export type {
@@ -22,6 +29,14 @@ export type {
   AuthrimServerErrorCode,
   AuthrimServerErrorOptions,
   AuthrimServerErrorMeta,
+  AuthrimOAuthErrorResponse,
+  Phase1ErrorDetails,
+  StepUpActionStatus,
+  StepUpErrorDetailCode,
+  StepUpErrorResponseBody,
+  StepUpInputState,
+  StepUpPreferredMethod,
+  StepUpStatusObject,
 } from './types/errors.js';
 export { AuthrimServerError, getServerErrorMeta } from './types/errors.js';
 export type {
@@ -58,6 +73,18 @@ export type {
   IntrospectionResponse,
   RevocationRequest,
 } from './types/token.js';
+export type {
+  StepUpAcceptableMethods,
+  StepUpActionResponse,
+  StepUpCompleteRequest,
+  StepUpDefaultPolicy,
+  StepUpFailureBody,
+  StepUpNextAction,
+  StepUpRequirement,
+  StepUpResendResponse,
+  StepUpStartRequest,
+} from './types/step-up.js';
+export { DEFAULT_STEP_UP_POLICY } from './types/step-up.js';
 export type { LogoutTokenClaims } from './types/session.js';
 
 // Middleware
@@ -81,6 +108,27 @@ export { TokenValidator, type TokenValidatorConfig } from './token/validator.js'
 export { IntrospectionClient, type IntrospectionClientConfig } from './token/introspection.js';
 export { RevocationClient, type RevocationClientConfig } from './token/revocation.js';
 
+// Step-Up
+export {
+  StepUpClient,
+  type StepUpClientConfig,
+  type StepUpIdempotentRequestOptions,
+  type StepUpRequestOptions,
+} from './step-up/index.js';
+
+// Product protected resources
+export {
+  CustomerProfileClient,
+  type CustomerProfileClientConfig,
+  type CustomerProfileDelegatedWriteOptions,
+  type CustomerProfileDelegatedWriteResponse,
+  type CustomerProfileElevationReadResponse,
+  type CustomerProfileRequestOptions,
+  type CustomerProfileUpdateInput,
+  type CustomerProfileView,
+  type DelegatedWriteAudit,
+} from './product/index.js';
+
 // DPoP
 export { DPoPValidator } from './dpop/validator.js';
 export { calculateJwkThumbprint, verifyJwkThumbprint } from './dpop/thumbprint.js';
@@ -98,7 +146,38 @@ export { buildErrorResponse, buildWwwAuthenticateHeader, buildErrorHeaders } fro
 export {
   BackChannelLogoutValidator,
   BACKCHANNEL_LOGOUT_EVENT,
+  establishCookieSessionFromDirectAuthArtifact,
+  handleRefreshTokenReuseDetection,
+  isRefreshTokenReuseDetected,
+  redeemDirectAuthArtifact,
+  AUTHRIM_CSRF_COOKIE_NAME,
+  AUTHRIM_CSRF_HEADER_NAME,
+  createDoubleSubmitCsrfToken,
+  resolveSessionCookieAttributes,
+  verifyDoubleSubmitCsrfToken,
+  verifyCookieSessionRequestHeaders,
+  verifyCookieSessionRequestOrigin,
+  type AuthrimServerSessionProfile,
   type BackChannelLogoutErrorCode,
   type BackChannelLogoutValidationOptions,
   type BackChannelLogoutValidationResult,
+  type CookieDescriptor,
+  type CookieSessionAdapterHooks,
+  type CookieSessionCreateInput,
+  type CookieSessionRecord,
+  type CookieSessionRequestOriginValidationResult,
+  type CreateDoubleSubmitCsrfTokenOptions,
+  type DirectAuthArtifactRedeemConfig,
+  type DirectAuthArtifactRedeemRequest,
+  type DirectAuthArtifactTokenResponse,
+  type DoubleSubmitCsrfValidationResult,
+  type EstablishedCookieSession,
+  type EstablishCookieSessionOptions,
+  type HandleRefreshTokenReuseDetectionOptions,
+  type RefreshTokenReuseDetectedContext,
+  type RefreshTokenReuseHandlingResult,
+  type ResolveSessionCookieAttributesOptions,
+  type SessionCookieAttributes,
+  type VerifyCookieSessionRequestOriginOptions,
+  type VerifyDoubleSubmitCsrfTokenOptions,
 } from './session/index.js';

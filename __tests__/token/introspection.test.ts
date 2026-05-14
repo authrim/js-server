@@ -60,6 +60,15 @@ describe('IntrospectionClient', () => {
       expect(body).toContain('token_type_hint=access_token');
     });
 
+    it('should introspect device_secret via canonical token_type_hint', async () => {
+      await client.introspectDeviceSecret('device-secret-value');
+
+      const call = (mockHttp.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const body = call[1].body as string;
+      expect(body).toContain('token=device-secret-value');
+      expect(body).toContain('token_type_hint=device_secret');
+    });
+
     it('should use Basic auth with URL-encoded credentials', async () => {
       // Create client with special characters in credentials
       client = new IntrospectionClient({
@@ -124,6 +133,27 @@ describe('IntrospectionClient', () => {
         expect((error as Error).message).toContain('Connection refused');
       }
     });
+
+    it('should preserve Authrim compatibility error payloads', async () => {
+      mockHttp.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: vi.fn().mockResolvedValue({
+          error: 'legacy_native_sso_discovery_unsupported',
+          error_description: 'Legacy Native SSO discovery fields are not supported',
+          error_uri: 'https://docs.authrim.example/errors/legacy_native_sso_discovery_unsupported',
+        }),
+      });
+
+      await expect(client.introspect({ token: 'test-token' })).rejects.toMatchObject({
+        code: 'legacy_native_sso_discovery_unsupported',
+        message: 'Legacy Native SSO discovery fields are not supported',
+        errorUri: 'https://docs.authrim.example/errors/legacy_native_sso_discovery_unsupported',
+        meta: expect.objectContaining({ severity: 'fatal' }),
+      });
+    });
   });
 
   describe('response parsing', () => {
@@ -149,6 +179,32 @@ describe('IntrospectionClient', () => {
       expect(result.scope).toBe('read write');
       expect(result.exp).toBe(1700000000);
       expect(result.token_type).toBe('Bearer');
+    });
+
+    it('should parse Native SSO device metadata when present', async () => {
+      mockHttp.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          active: true,
+          installation_id: 'inst_123',
+          client_id: 'native-client',
+          app_display_name: 'Authrim Mobile',
+          platform: 'ios',
+          display_name: 'Yuta iPhone',
+          fallback_display_name: 'iPhone',
+        }),
+      });
+
+      const result = await client.introspect({
+        token: 'device-secret',
+        token_type_hint: 'device_secret',
+      });
+
+      expect(result.installation_id).toBe('inst_123');
+      expect(result.app_display_name).toBe('Authrim Mobile');
+      expect(result.platform).toBe('ios');
+      expect(result.display_name).toBe('Yuta iPhone');
+      expect(result.fallback_display_name).toBe('iPhone');
     });
   });
 });

@@ -32,11 +32,18 @@ import { calculateJwkThumbprint } from './thumbprint.js';
  * Supported algorithms for DPoP proofs
  */
 const SUPPORTED_ALGORITHMS = new Set([
-  'RS256', 'RS384', 'RS512',
-  'PS256', 'PS384', 'PS512',
-  'ES256', 'ES384', 'ES512',
+  'ES256',
+  'PS256',
   'EdDSA',
 ]);
+
+/**
+ * Maximum accepted DPoP proof size in bytes.
+ *
+ * DPoP proofs are JWTs that include an embedded public JWK. They should remain
+ * small; bounding them prevents oversized base64/JSON allocations.
+ */
+const MAX_DPOP_PROOF_SIZE = 8192;
 
 /**
  * Private key parameters that MUST NOT be present in DPoP proof JWK
@@ -56,6 +63,10 @@ const PRIVATE_KEY_PARAMS = new Set([
  * Parse a DPoP proof without verification
  */
 function parseDPoPProof(proof: string): { header: DPoPProofHeader; payload: DPoPProofPayload; signature: string } {
+  if (proof.length > MAX_DPOP_PROOF_SIZE) {
+    throw new Error(`DPoP proof exceeds maximum size of ${MAX_DPOP_PROOF_SIZE} bytes`);
+  }
+
   const parts = proof.split('.');
 
   if (parts.length !== 3) {

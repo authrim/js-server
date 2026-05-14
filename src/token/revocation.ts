@@ -6,8 +6,18 @@
 
 import type { HttpProvider } from '../providers/http.js';
 import type { RevocationRequest } from '../types/token.js';
-import { AuthrimServerError } from '../types/errors.js';
+import {
+  AuthrimServerError,
+  createServerErrorFromOAuthResponse,
+  type AuthrimOAuthErrorResponse,
+} from '../types/errors.js';
 import { encodeBasicCredentials } from '../utils/auth.js';
+import {
+  readResponseJsonWithLimit,
+  readResponseTextWithLimit,
+} from '../utils/response-limits.js';
+
+const MAX_OAUTH_ERROR_RESPONSE_BYTES = 16 * 1024;
 
 /**
  * Revocation client configuration
@@ -66,11 +76,12 @@ export class RevocationClient {
 
       // Per RFC 7009, 200 is success even if token was already revoked or invalid
       if (!response.ok) {
-        // Consume response body to release the connection
-        await response.text().catch(() => {});
-        throw new AuthrimServerError(
+        const payload = await readOAuthErrorPayload(response);
+        throw createServerErrorFromOAuthResponse(
+          payload,
           'revocation_error',
-          `Revocation request failed: ${response.status} ${response.statusText}`
+          `Revocation request failed: ${response.status} ${response.statusText}`,
+          { status: response.status }
         );
       }
     } catch (error) {
@@ -84,5 +95,42 @@ export class RevocationClient {
         { cause: error instanceof Error ? error : undefined }
       );
     }
+  }
+
+  /**
+   * Revoke a Native SSO device_secret.
+   *
+   * Callers should avoid logging the raw device_secret.
+   */
+  async revokeDeviceSecret(deviceSecret: string): Promise<void> {
+    return this.revoke({
+      token: deviceSecret,
+      token_type_hint: 'device_secret',
+    });
+  }
+}
+
+async function readOAuthErrorPayload(response: Response): Promise<AuthrimOAuthErrorResponse | null> {
+  const contentType = response.headers?.get?.('content-type') ?? '';
+
+  if (contentType.includes('json')) {
+    try {
+      return await readResponseJsonWithLimit<AuthrimOAuthErrorResponse>(
+        response,
+        MAX_OAUTH_ERROR_RESPONSE_BYTES
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const text = await readResponseTextWithLimit(response, MAX_OAUTH_ERROR_RESPONSE_BYTES);
+    if (!text) {
+      return null;
+    }
+    return JSON.parse(text) as AuthrimOAuthErrorResponse;
+  } catch {
+    return null;
   }
 }

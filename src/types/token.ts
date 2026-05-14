@@ -18,6 +18,22 @@ export interface TokenValidationOptions {
   requiredScopes?: string[];
   /** Whether to validate DPoP binding if cnf claim is present */
   validateDPoP?: boolean;
+  /**
+   * Claim name that carries the tenant id.
+   * @default "tenant_id"
+   */
+  tenantClaim?: string;
+  /** Require the tenant claim even when no specific tenant rule is configured. */
+  requireTenantClaim?: boolean;
+  /** Require the token to belong to this exact tenant. */
+  requiredTenantId?: string;
+  /** Require the token tenant to be one of these tenants. */
+  allowedTenantIds?: string[];
+  /** Custom tenant predicate for advanced ABAC/ReBAC use cases. */
+  tenantPredicate?: (
+    tenantId: string,
+    claims: import('./claims.js').AccessTokenClaims
+  ) => boolean | Promise<boolean>;
 }
 
 /**
@@ -88,7 +104,7 @@ export interface IntrospectionRequest {
   /** Token to introspect */
   token: string;
   /** Token type hint */
-  token_type_hint?: 'access_token' | 'refresh_token';
+  token_type_hint?: TokenTypeHint;
 }
 
 /**
@@ -121,6 +137,16 @@ export interface IntrospectionResponse {
   jti?: string;
   /** Confirmation (DPoP binding) */
   cnf?: { jkt?: string };
+  /** Native SSO canonical installation id, for device_secret introspection */
+  installation_id?: string;
+  /** Native SSO app display name, omitted when it cannot be resolved */
+  app_display_name?: string;
+  /** Native SSO device platform */
+  platform?: string;
+  /** User-assigned installation display name */
+  display_name?: string;
+  /** Server-generated fallback display name */
+  fallback_display_name?: string;
   /** Additional claims */
   [key: string]: unknown;
 }
@@ -132,5 +158,10 @@ export interface RevocationRequest {
   /** Token to revoke */
   token: string;
   /** Token type hint */
-  token_type_hint?: 'access_token' | 'refresh_token';
+  token_type_hint?: TokenTypeHint;
 }
+
+/**
+ * Token type hints accepted by Authrim token introspection/revocation.
+ */
+export type TokenTypeHint = 'access_token' | 'refresh_token' | 'device_secret';

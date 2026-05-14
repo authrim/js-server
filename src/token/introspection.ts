@@ -6,8 +6,19 @@
 
 import type { HttpProvider } from '../providers/http.js';
 import type { IntrospectionRequest, IntrospectionResponse } from '../types/token.js';
-import { AuthrimServerError } from '../types/errors.js';
+import {
+  AuthrimServerError,
+  createServerErrorFromOAuthResponse,
+  type AuthrimOAuthErrorResponse,
+} from '../types/errors.js';
 import { encodeBasicCredentials } from '../utils/auth.js';
+import {
+  readResponseJsonWithLimit,
+  readResponseTextWithLimit,
+} from '../utils/response-limits.js';
+
+const MAX_INTROSPECTION_RESPONSE_BYTES = 64 * 1024;
+const MAX_OAUTH_ERROR_RESPONSE_BYTES = 16 * 1024;
 
 /**
  * Introspection client configuration
@@ -64,15 +75,19 @@ export class IntrospectionClient {
       });
 
       if (!response.ok) {
-        // Consume response body to release the connection
-        await response.text().catch(() => {});
-        throw new AuthrimServerError(
+        const payload = await readOAuthErrorPayload(response);
+        throw createServerErrorFromOAuthResponse(
+          payload,
           'introspection_error',
-          `Introspection request failed: ${response.status} ${response.statusText}`
+          `Introspection request failed: ${response.status} ${response.statusText}`,
+          { status: response.status }
         );
       }
 
-      const result = await response.json() as IntrospectionResponse;
+      const result = await readResponseJsonWithLimit<IntrospectionResponse>(
+        response,
+        MAX_INTROSPECTION_RESPONSE_BYTES
+      );
       return result;
     } catch (error) {
       if (error instanceof AuthrimServerError) {
@@ -85,5 +100,45 @@ export class IntrospectionClient {
         { cause: error instanceof Error ? error : undefined }
       );
     }
+  }
+
+  /**
+   * Introspect a Native SSO device_secret.
+   *
+   * Callers should avoid logging the raw device_secret.
+   */
+  async introspectDeviceSecret(deviceSecret: string): Promise<IntrospectionResponse> {
+    return this.introspect({
+      token: deviceSecret,
+      token_type_hint: 'device_secret',
+    });
+  }
+}
+
+async function readOAuthErrorPayload(response: Response): Promise<AuthrimOAuthErrorResponse | null> {
+  const contentType = response.headers?.get?.('content-type') ?? '';
+
+  if (contentType.includes('json')) {
+    try {
+      return await readResponseJsonWithLimit<AuthrimOAuthErrorResponse>(
+        response,
+        MAX_OAUTH_ERROR_RESPONSE_BYTES
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const text = await readResponseTextWithLimit(
+      response,
+      MAX_OAUTH_ERROR_RESPONSE_BYTES
+    );
+    if (!text) {
+      return null;
+    }
+    return JSON.parse(text) as AuthrimOAuthErrorResponse;
+  } catch {
+    return null;
   }
 }

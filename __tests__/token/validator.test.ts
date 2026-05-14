@@ -92,6 +92,7 @@ describe('TokenValidator', () => {
       expect(result.data).not.toBeNull();
       expect(result.error).toBeNull();
       expect(result.data?.claims.sub).toBe('user123');
+      expect(result.data?.issuer).toBe('https://issuer.example.com');
       expect(result.data?.tokenType).toBe('Bearer');
     });
 
@@ -364,6 +365,136 @@ describe('TokenValidator', () => {
       const result = await validator.validate(token);
 
       expect(result.data).not.toBeNull();
+    });
+
+    it('should resolve JWKS by the token issuer before signature verification', async () => {
+      const issuerAJwksManager = {
+        getKey: vi.fn().mockResolvedValue({
+          key: mockCachedKey,
+          error: null,
+          needsRefresh: false,
+        }),
+      } as unknown as JwksManager;
+      const issuerBJwksManager = {
+        getKey: vi.fn().mockResolvedValue({
+          key: mockCachedKey,
+          error: null,
+          needsRefresh: false,
+        }),
+      } as unknown as JwksManager;
+      const resolver = vi.fn(async (issuer: string) =>
+        issuer === 'https://issuer-b.example.com' ? issuerBJwksManager : issuerAJwksManager
+      );
+      validator = new TokenValidator({
+        jwksManagerResolver: resolver,
+        crypto: mockCrypto,
+        clock: mockClock,
+        options: {
+          issuer: ['https://issuer-a.example.com', 'https://issuer-b.example.com'],
+          audience: 'https://api.example.com',
+        },
+      });
+
+      const token = createJwt(validHeader, {
+        ...validPayload,
+        iss: 'https://issuer-b.example.com',
+      });
+      const result = await validator.validate(token);
+
+      expect(result.error).toBeNull();
+      expect(resolver).toHaveBeenCalledWith('https://issuer-b.example.com');
+      expect(issuerAJwksManager.getKey).not.toHaveBeenCalled();
+      expect(issuerBJwksManager.getKey).toHaveBeenCalledWith(validHeader);
+    });
+
+    it('should reject unconfigured issuers before JWKS resolution', async () => {
+      const resolver = vi.fn(async () => mockJwksManager);
+      validator = new TokenValidator({
+        jwksManagerResolver: resolver,
+        crypto: mockCrypto,
+        clock: mockClock,
+        options: {
+          issuer: ['https://issuer-a.example.com'],
+          audience: 'https://api.example.com',
+        },
+      });
+
+      const token = createJwt(validHeader, {
+        ...validPayload,
+        iss: 'https://evil.example.com',
+      });
+      const result = await validator.validate(token);
+
+      expect(result.data).toBeNull();
+      expect(result.error?.code).toBe('invalid_issuer');
+      expect(resolver).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('tenant validation', () => {
+    it('should expose tenantId from the configured claim', async () => {
+      validator = new TokenValidator({
+        jwksManager: mockJwksManager,
+        crypto: mockCrypto,
+        clock: mockClock,
+        options: {
+          issuer: 'https://issuer.example.com',
+          audience: 'https://api.example.com',
+          tenantClaim: 'tenant',
+        },
+      });
+
+      const token = createJwt(validHeader, { ...validPayload, tenant: 'tenant-a' });
+      const result = await validator.validate(token);
+
+      expect(result.error).toBeNull();
+      expect(result.data?.tenantId).toBe('tenant-a');
+    });
+
+    it('should reject missing tenant claims when required', async () => {
+      validator = new TokenValidator({
+        jwksManager: mockJwksManager,
+        crypto: mockCrypto,
+        clock: mockClock,
+        options: {
+          issuer: 'https://issuer.example.com',
+          audience: 'https://api.example.com',
+          requireTenantClaim: true,
+        },
+      });
+
+      const token = createJwt(validHeader, validPayload);
+      const result = await validator.validate(token);
+
+      expect(result.data).toBeNull();
+      expect(result.error?.code).toBe('invalid_tenant');
+    });
+
+    it('should enforce allowedTenantIds and tenantPredicate', async () => {
+      const predicate = vi.fn((tenantId: string) => tenantId.endsWith('-prod'));
+      validator = new TokenValidator({
+        jwksManager: mockJwksManager,
+        crypto: mockCrypto,
+        clock: mockClock,
+        options: {
+          issuer: 'https://issuer.example.com',
+          audience: 'https://api.example.com',
+          allowedTenantIds: ['tenant-a-prod'],
+          tenantPredicate: predicate,
+        },
+      });
+
+      const allowed = await validator.validate(
+        createJwt(validHeader, { ...validPayload, tenant_id: 'tenant-a-prod' })
+      );
+      const rejected = await validator.validate(
+        createJwt(validHeader, { ...validPayload, tenant_id: 'tenant-b-prod' })
+      );
+
+      expect(allowed.error).toBeNull();
+      expect(predicate).toHaveBeenCalledWith('tenant-a-prod', expect.objectContaining({ sub: 'user123' }));
+      expect(rejected.data).toBeNull();
+      expect(rejected.error?.code).toBe('invalid_tenant');
     });
   });
 });

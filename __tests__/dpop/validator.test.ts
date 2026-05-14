@@ -94,6 +94,22 @@ describe('DPoPValidator', () => {
       expect(result.errorMessage).toContain('Unsupported algorithm');
     });
 
+    it('should reject RS256 for Phase 1 DPoP proofs', async () => {
+      const proof = createDPoPProof(
+        { ...validHeader, alg: 'RS256' },
+        validPayload
+      );
+
+      const result = await validator.validate(proof, {
+        method: 'POST',
+        uri: 'https://api.example.com/token',
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.errorCode).toBe('dpop_proof_invalid');
+      expect(result.errorMessage).toContain('Unsupported algorithm');
+    });
+
     it('should reject missing jwk', async () => {
       const proof = createDPoPProof(
         { typ: 'dpop+jwt', alg: 'ES256' },
@@ -137,7 +153,7 @@ describe('DPoPValidator', () => {
       };
 
       const proof = createDPoPProof(
-        { ...validHeader, alg: 'RS256', jwk: rsaJwk },
+        { ...validHeader, alg: 'PS256', jwk: rsaJwk },
         validPayload
       );
 
@@ -160,7 +176,7 @@ describe('DPoPValidator', () => {
       };
 
       const proof = createDPoPProof(
-        { ...validHeader, alg: 'RS256', jwk: rsaJwk },
+        { ...validHeader, alg: 'PS256', jwk: rsaJwk },
         validPayload
       );
 
@@ -479,6 +495,16 @@ describe('DPoPValidator', () => {
 
     it('should reject proof with wrong number of parts', async () => {
       const result = await validator.validate('a.b', {
+        method: 'POST',
+        uri: 'https://api.example.com/token',
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.errorCode).toBe('dpop_proof_invalid');
+    });
+
+    it('should reject oversized proofs before decoding', async () => {
+      const result = await validator.validate(`${'a'.repeat(8193)}.b.c`, {
         method: 'POST',
         uri: 'https://api.example.com/token',
       });

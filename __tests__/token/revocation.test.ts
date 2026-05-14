@@ -55,6 +55,15 @@ describe('RevocationClient', () => {
       expect(body).toContain('token_type_hint=refresh_token');
     });
 
+    it('should revoke device_secret via canonical token_type_hint', async () => {
+      await client.revokeDeviceSecret('device-secret-value');
+
+      const call = (mockHttp.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const body = call[1].body as string;
+      expect(body).toContain('token=device-secret-value');
+      expect(body).toContain('token_type_hint=device_secret');
+    });
+
     it('should use Basic auth with URL-encoded credentials', async () => {
       // Create client with special characters in credentials
       client = new RevocationClient({
@@ -134,6 +143,27 @@ describe('RevocationClient', () => {
       await expect(client.revoke({ token: 'test-token' }))
         .rejects.toThrow('400 Bad Request');
     });
+
+    it('should preserve Authrim compatibility error payloads', async () => {
+      mockHttp.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: vi.fn().mockResolvedValue({
+          error: 'legacy_endpoint_not_supported',
+          error_description: 'Legacy endpoint is not supported',
+          error_uri: 'https://docs.authrim.example/errors/legacy_endpoint_not_supported',
+        }),
+      });
+
+      await expect(client.revoke({ token: 'test-token' })).rejects.toMatchObject({
+        code: 'legacy_endpoint_not_supported',
+        message: 'Legacy endpoint is not supported',
+        errorUri: 'https://docs.authrim.example/errors/legacy_endpoint_not_supported',
+        meta: expect.objectContaining({ severity: 'fatal' }),
+      });
+    });
   });
 
   describe('token type hints', () => {
@@ -157,6 +187,17 @@ describe('RevocationClient', () => {
       const call = (mockHttp.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
       const body = call[1].body as string;
       expect(body).toContain('token_type_hint=refresh_token');
+    });
+
+    it('should support device_secret hint', async () => {
+      await client.revoke({
+        token: 'test-device-secret',
+        token_type_hint: 'device_secret',
+      });
+
+      const call = (mockHttp.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const body = call[1].body as string;
+      expect(body).toContain('token_type_hint=device_secret');
     });
   });
 });

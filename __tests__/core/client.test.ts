@@ -13,6 +13,26 @@ describe('AuthrimServer', () => {
   let mockCache: CacheProvider<CachedJwk[]>;
 
   const nowSeconds = 1700000000;
+  const testJwks = {
+    keys: [
+      {
+        kty: 'RSA',
+        n: 'modulus',
+        e: 'AQAB',
+        kid: 'key-1',
+        alg: 'RS256',
+        use: 'sig',
+      },
+    ],
+  };
+
+  function createJwt(header: object, payload: object): string {
+    return [
+      Buffer.from(JSON.stringify(header)).toString('base64url'),
+      Buffer.from(JSON.stringify(payload)).toString('base64url'),
+      Buffer.from('signature').toString('base64url'),
+    ].join('.');
+  }
 
   beforeEach(() => {
     mockHttp = {
@@ -375,6 +395,63 @@ describe('AuthrimServer', () => {
       expect(result.active).toBe(true);
       expect(result.sub).toBe('user123');
     });
+
+    it('should require issuer context for multi-issuer introspection helpers', async () => {
+      const server = new AuthrimServer({
+        issuer: ['https://tenant-a.example.com', 'https://tenant-b.example.com'],
+        audience: 'https://api.example.com',
+        jwksUri: 'https://shared.example.com/jwks.json',
+        introspectionEndpointByIssuer: {
+          'https://tenant-a.example.com': 'https://tenant-a.example.com/introspect',
+          'https://tenant-b.example.com': 'https://tenant-b.example.com/introspect',
+        },
+        clientCredentials: {
+          clientId: 'my-client',
+          clientSecret: 'my-secret',
+        },
+        http: mockHttp,
+        crypto: mockCrypto,
+        clock: mockClock,
+      });
+
+      await expect(server.introspect('test-token')).rejects.toThrow(
+        'issuer or validated token context is required'
+      );
+    });
+
+    it('should call the per-issuer introspection endpoint', async () => {
+      mockHttp.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ active: true, iss: 'https://tenant-b.example.com' }),
+      });
+
+      const server = new AuthrimServer({
+        issuer: ['https://tenant-a.example.com', 'https://tenant-b.example.com'],
+        audience: 'https://api.example.com',
+        jwksUri: 'https://shared.example.com/jwks.json',
+        introspectionEndpointByIssuer: {
+          'https://tenant-a.example.com': 'https://tenant-a.example.com/introspect',
+          'https://tenant-b.example.com': 'https://tenant-b.example.com/introspect',
+        },
+        clientCredentials: {
+          clientId: 'my-client',
+          clientSecret: 'my-secret',
+        },
+        http: mockHttp,
+        crypto: mockCrypto,
+        clock: mockClock,
+      });
+
+      const result = await server.introspect('test-token', 'access_token', {
+        issuer: 'https://tenant-b.example.com',
+      });
+
+      expect(result.active).toBe(true);
+      expect(mockHttp.fetch).toHaveBeenCalledWith(
+        'https://tenant-b.example.com/introspect',
+        expect.any(Object)
+      );
+    });
   });
 
   describe('revoke()', () => {
@@ -432,6 +509,86 @@ describe('AuthrimServer', () => {
 
       // Should not throw even if not initialized
       expect(() => server.invalidateJwksCache()).not.toThrow();
+    });
+  });
+
+  describe('multi-issuer JWKS', () => {
+    it('should fetch JWKS from the token issuer map entry', async () => {
+      mockHttp.fetch = vi.fn().mockImplementation((url: string) =>
+        Promise.resolve({
+          ok: true,
+          headers: { get: () => null },
+          json: vi.fn().mockResolvedValue(testJwks),
+        })
+      );
+
+      const server = new AuthrimServer({
+        issuer: ['https://tenant-a.example.com', 'https://tenant-b.example.com'],
+        audience: 'https://api.example.com',
+        jwksUriByIssuer: {
+          'https://tenant-a.example.com': 'https://tenant-a.example.com/jwks.json',
+          'https://tenant-b.example.com': 'https://tenant-b.example.com/jwks.json',
+        },
+        http: mockHttp,
+        crypto: mockCrypto,
+        clock: mockClock,
+      });
+
+      const token = createJwt(
+        { alg: 'RS256', typ: 'JWT', kid: 'key-1' },
+        {
+          iss: 'https://tenant-b.example.com',
+          aud: 'https://api.example.com',
+          sub: 'user-b',
+          exp: nowSeconds + 3600,
+          iat: nowSeconds,
+        }
+      );
+
+      const result = await server.validateToken(token);
+
+      expect(result.error).toBeNull();
+      expect(mockHttp.fetch).toHaveBeenCalledWith(
+        'https://tenant-b.example.com/jwks.json',
+        expect.any(Object)
+      );
+    });
+
+    it('should apply tokenValidation tenant rules from server config', async () => {
+      mockHttp.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: () => null },
+        json: vi.fn().mockResolvedValue(testJwks),
+      });
+
+      const server = new AuthrimServer({
+        issuer: 'https://auth.example.com',
+        audience: 'https://api.example.com',
+        jwksUri: 'https://auth.example.com/jwks.json',
+        tokenValidation: {
+          requiredTenantId: 'tenant-a',
+        },
+        http: mockHttp,
+        crypto: mockCrypto,
+        clock: mockClock,
+      });
+
+      const token = createJwt(
+        { alg: 'RS256', typ: 'JWT', kid: 'key-1' },
+        {
+          iss: 'https://auth.example.com',
+          aud: 'https://api.example.com',
+          sub: 'user-a',
+          tenant_id: 'tenant-b',
+          exp: nowSeconds + 3600,
+          iat: nowSeconds,
+        }
+      );
+
+      const result = await server.validateToken(token);
+
+      expect(result.data).toBeNull();
+      expect(result.error?.code).toBe('invalid_tenant');
     });
   });
 

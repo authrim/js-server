@@ -7,6 +7,7 @@ import type { CryptoProvider } from '../providers/crypto.js';
 import type { ClockProvider } from '../providers/clock.js';
 import type { CacheProvider } from '../providers/cache.js';
 import type { CachedJwk } from './jwk.js';
+import type { TokenValidationOptions } from './token.js';
 
 /**
  * AuthrimServer configuration options
@@ -26,9 +27,23 @@ export interface AuthrimServerConfig {
 
   /**
    * JWKS endpoint URL
-   * If not provided, will be discovered from `{issuer}/.well-known/openid-configuration`
+   * If multiple issuers are configured, this means all issuers share the same JWKS.
+   * Use jwksUriByIssuer when each tenant/issuer has its own JWKS endpoint.
    */
   jwksUri?: string;
+
+  /**
+   * JWKS endpoint URL by issuer.
+   * Only configured issuers are accepted; this map is never used for arbitrary iss values.
+   */
+  jwksUriByIssuer?: Record<string, string>;
+
+  /**
+   * Discover JWKS from each allowed issuer's OpenID configuration when no explicit
+   * jwksUri/jwksUriByIssuer entry exists.
+   * @default true
+   */
+  dynamicJwksDiscovery?: boolean;
 
   /**
    * Clock tolerance in seconds for exp, nbf, iat validation
@@ -49,10 +64,31 @@ export interface AuthrimServerConfig {
   introspectionEndpoint?: string;
 
   /**
+   * Token introspection endpoint by issuer.
+   */
+  introspectionEndpointByIssuer?: Record<string, string>;
+
+  /**
    * Token revocation endpoint
    * Required for revocation operations
    */
   revocationEndpoint?: string;
+
+  /**
+   * Token revocation endpoint by issuer.
+   */
+  revocationEndpointByIssuer?: Record<string, string>;
+
+  /**
+   * Canonical Step-Up endpoint base.
+   * Defaults to `{issuer}/auth/step-up`.
+   */
+  stepUpEndpoint?: string;
+
+  /**
+   * Canonical Step-Up endpoint base by issuer.
+   */
+  stepUpEndpointByIssuer?: Record<string, string>;
 
   /**
    * Client credentials for introspection/revocation
@@ -61,6 +97,11 @@ export interface AuthrimServerConfig {
     clientId: string;
     clientSecret: string;
   };
+
+  /**
+   * Additional token validation rules beyond issuer/audience.
+   */
+  tokenValidation?: Omit<TokenValidationOptions, 'issuer' | 'audience'>;
 
   // Provider injection
 
@@ -103,14 +144,21 @@ export interface ResolvedAuthrimServerConfig {
   issuer: string[];
   audience: string[];
   jwksUri?: string;
+  jwksUriByIssuer: Record<string, string>;
+  dynamicJwksDiscovery: boolean;
   clockToleranceSeconds: number;
   jwksRefreshIntervalMs: number;
   introspectionEndpoint?: string;
+  introspectionEndpointByIssuer: Record<string, string>;
   revocationEndpoint?: string;
+  revocationEndpointByIssuer: Record<string, string>;
+  stepUpEndpoint?: string;
+  stepUpEndpointByIssuer: Record<string, string>;
   clientCredentials?: {
     clientId: string;
     clientSecret: string;
   };
+  tokenValidation: Omit<TokenValidationOptions, 'issuer' | 'audience'>;
   http: HttpProvider;
   crypto: CryptoProvider;
   clock: ClockProvider;
